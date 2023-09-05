@@ -272,7 +272,39 @@ int builtin_cmd(char **argv) {
 /*
  * do_bgfg - Execute the builtin bg and fg commands
  */
-void do_bgfg(char **argv) { return; }
+void do_bgfg(char **argv) {
+  if (argv[1] == NULL) {
+    printf("%s command requires PID or %%jobid argument\n", argv[0]);
+    return;
+  }
+  struct job_t *job;
+  if (argv[1][0] == '%') {
+    int jid = atoi(&argv[1][1]);
+    job = getjobjid(jobs, jid);
+    if (job == NULL) {
+      printf("%s: No such job\n", argv[1]);
+      return;
+    }
+  } else if (isdigit(argv[1][0])) {
+    pid_t pid = atoi(argv[1]);
+    job = getjobpid(jobs, pid);
+    if (job == NULL) {
+      printf("(%d): No such process\n", pid);
+      return;
+    }
+  } else {
+    printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+    return;
+  }
+  kill(-(job->pid), SIGCONT);
+  if (!strcmp(argv[0], "bg")) {
+    job->state = BG;
+    printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
+  } else {
+    job->state = FG;
+    waitfg(job->pid);
+  }
+}
 
 /*
  * waitfg - Block until process pid is no longer the foreground process
@@ -309,9 +341,11 @@ void sigchld_handler(int sig) {
     if (WIFSTOPPED(status)) {
       job = getjobpid(jobs, pid);
       job->state = ST;
-      printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, sig);
+      printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid,
+             WSTOPSIG(status));
     } else if (WIFSIGNALED(status)) {
-      printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, sig);
+      printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid,
+             WTERMSIG(status));
       deletejob(jobs, pid);
     } else if (WIFEXITED(status)) {
       deletejob(jobs, pid);
@@ -326,14 +360,36 @@ void sigchld_handler(int sig) {
  *    user types ctrl-c at the keyboard.  Catch it and send it along
  *    to the foreground job.
  */
-void sigint_handler(int sig) { return; }
+void sigint_handler(int sig) {
+  int olderrno = errno;
+  pid_t pid;
+  sigset_t mask_all, prev_all;
+  sigfillset(&mask_all);
+  sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
+  if ((pid = fgpid(jobs)) != 0) {
+    sigprocmask(SIG_SETMASK, &prev_all, NULL);
+    kill(-pid, SIGINT);
+  }
+  errno = olderrno;
+}
 
 /*
  * sigtstp_handler - The kernel sends a SIGTSTP to the shell whenever
  *     the user types ctrl-z at the keyboard. Catch it and suspend the
  *     foreground job by sending it a SIGTSTP.
  */
-void sigtstp_handler(int sig) { return; }
+void sigtstp_handler(int sig) {
+  int olderrno = errno;
+  pid_t pid;
+  sigset_t mask_all, prev_all;
+  sigfillset(&mask_all);
+  sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
+  if ((pid = fgpid(jobs)) != 0) {
+    sigprocmask(SIG_SETMASK, &prev_all, NULL);
+    kill(-pid, SIGTSTP);
+  }
+  errno = olderrno;
+}
 
 /*********************
  * End signal handlers
